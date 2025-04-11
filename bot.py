@@ -1,7 +1,7 @@
+import os
 import logging
 import random
 from datetime import datetime, timedelta
-
 from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove
 )
@@ -11,19 +11,21 @@ from telegram.ext import (
 )
 
 # === CONFIGURATION ===
-TOKEN = "8037210105:AAFbBznD3Mf1rGgGZdrlYoYXAEijr8JEuSg"
+TOKEN = "8073731661:AAEnHItKmA-Xo0bSXzb95UrGrsql-QaZEo0"
 REQUIRED_CHANNELS = ["@ultracashonline", "@westbengalnetwork2"]
 ADMIN_ID = 5944513375
+PORT = int(os.environ.get("PORT", 8080))
+WEBHOOK_URL = f"https://reffer-bot.onrender.com/{TOKEN}"
 
-# === LOGGING SETUP ===
+# === LOGGING ===
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# === DATABASE ===
+# === IN-MEMORY DATABASE ===
 users_data = {}
 WAITING_FOR_GMAIL = range(1)
 
-# === MENUS ===
+# === UI BUTTONS ===
 def main_menu():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("💰 Check Balance", callback_data="balance"),
@@ -50,7 +52,7 @@ async def get_missing_channels(user_id, context):
             missing.append(channel)
     return missing
 
-# === START ===
+# === START COMMAND ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
@@ -123,8 +125,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         missing = await get_missing_channels(user_id, context)
         if not missing:
             await query.edit_message_text("✅ You've joined all channels!", reply_markup=main_menu())
-
-            # Notify referrer
             for referrer_id, data in users_data.items():
                 if user_id in data.get("referrals", set()):
                     await context.bot.send_message(
@@ -133,8 +133,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             f"🎉 *Your Referral Joined!*\n\n"
                             f"Name: [{user.first_name}](tg://user?id={user_id})\n"
                             f"ID: `{user_id}`\n"
-                            f"Username: @{user.username or 'N/A'}\n"
-                            "has joined all required channels and started the bot!"
+                            f"Username: @{user.username or 'N/A'}"
                         ),
                         parse_mode="Markdown"
                     )
@@ -163,7 +162,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         link = f"https://t.me/{context.bot.username}?start={user_id}"
         referrals = user_data["referrals"]
         count = len(referrals)
-
         if referrals:
             referral_text = ""
             for ref_id in referrals:
@@ -230,7 +228,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=back_button(), parse_mode="Markdown"
         )
 
-# === HANDLE GMAIL ===
+# === GMAIL REDEEM HANDLER ===
 async def handle_gmail_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
@@ -261,7 +259,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❌ Redeem cancelled.", reply_markup=main_menu())
     return ConversationHandler.END
 
-# === MAIN ===
+# === MAIN FUNCTION ===
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
@@ -275,8 +273,14 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(redeem_handler)
     app.add_handler(CallbackQueryHandler(handle_callback))
-    logger.info("Bot is running...")
-    app.run_polling()
+
+    logger.info(f"Bot is running on 0.0.0.0:{PORT}")
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        url_path=TOKEN,
+        webhook_url=WEBHOOK_URL
+    )
 
 if __name__ == "__main__":
     main()
