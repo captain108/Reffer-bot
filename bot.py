@@ -11,7 +11,7 @@ from telegram.ext import (
 )
 
 # === CONFIGURATION ===
-TOKEN = "8073731661:AAEnHItKmA-Xo0bSXzb95UrGrsql-QaZEo0"
+TOKEN = "8037210105:AAFbBznD3Mf1rGgGZdrlYoYXAEijr8JEuSg"
 REQUIRED_CHANNELS = ["@ultracashonline", "@westbengalnetwork2"]
 ADMIN_ID = 5944513375
 
