@@ -1,3 +1,5 @@
+import asyncio
+from aiohttp import web
 import logging
 import random
 from datetime import datetime, timedelta
@@ -277,6 +279,40 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_callback))
     logger.info("Bot is running...")
     app.run_polling()
+#web server
+async def handle(request):
+    return web.Response(text="Bot is running!")
+
+async def run_webserver():
+    app = web.Application()
+    app.router.add_get("/", handle)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", 10000)
+    await site.start()
+
+async def run_bot():
+    app = ApplicationBuilder().token(TOKEN).build()
+
+    redeem_handler = ConversationHandler(
+        entry_points=[CallbackQueryHandler(handle_callback, pattern="^redeem$")],
+        states={WAITING_FOR_GMAIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_gmail_input)]},
+        fallbacks=[CommandHandler("cancel", cancel)],
+        allow_reentry=True
+    )
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(redeem_handler)
+    app.add_handler(CallbackQueryHandler(handle_callback))
+
+    logger.info("Bot is running...")
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling()
+    await asyncio.Event().wait()
+
+async def main_all():
+    await asyncio.gather(run_webserver(), run_bot())
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main_all())
