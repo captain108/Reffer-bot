@@ -1,7 +1,8 @@
 import asyncio
+import json
+import os
 from aiohttp import web
 import logging
-import random
 from datetime import datetime, timedelta
 
 from telegram import (
@@ -13,7 +14,7 @@ from telegram.ext import (
 )
 
 # === CONFIGURATION ===
-TOKEN = "8037210105:AAFbBznD3Mf1rGgGZdrlYoYXAEijr8JEuSg"
+TOKEN = "8073731661:AAEnHItKmA-Xo0bSXzb95UrGrsql-QaZEo0"
 REQUIRED_CHANNELS = ["@ultracashonline", "@westbengalnetwork2"]
 ADMIN_ID = 5944513375
 
@@ -21,9 +22,31 @@ ADMIN_ID = 5944513375
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# === DATABASE ===
+# === DATABASE FILE ===
+DATA_FILE = "users_data.json"
 users_data = {}
 WAITING_FOR_GMAIL = range(1)
+
+# === JSON LOAD & SAVE ===
+def save_data():
+    try:
+        with open(DATA_FILE, "w") as f:
+            json.dump(users_data, f, indent=2, default=str)
+        logger.info("User data saved.")
+    except Exception as e:
+        logger.error(f"Failed to save data: {e}")
+
+def load_data():
+    global users_data
+    if os.path.exists(DATA_FILE):
+        with open(DATA_FILE, "r") as f:
+            raw = json.load(f)
+            for uid, data in raw.items():
+                data["referrals"] = set(data["referrals"])
+                if data["last_bonus"]:
+                    data["last_bonus"] = datetime.fromisoformat(data["last_bonus"])
+            users_data = {int(k): v for k, v in raw.items()}
+        logger.info("User data loaded.")
 
 # === MENUS ===
 def main_menu():
@@ -126,7 +149,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not missing:
             await query.edit_message_text("✅ You've joined all channels!", reply_markup=main_menu())
 
-            # Notify referrer
             for referrer_id, data in users_data.items():
                 if user_id in data.get("referrals", set()):
                     await context.bot.send_message(
@@ -263,23 +285,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❌ Redeem cancelled.", reply_markup=main_menu())
     return ConversationHandler.END
 
-# === MAIN ===
-def main():
-    app = ApplicationBuilder().token(TOKEN).build()
-
-    redeem_handler = ConversationHandler(
-        entry_points=[CallbackQueryHandler(handle_callback, pattern="^redeem$")],
-        states={WAITING_FOR_GMAIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_gmail_input)]},
-        fallbacks=[CommandHandler("cancel", cancel)],
-        allow_reentry=True
-    )
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(redeem_handler)
-    app.add_handler(CallbackQueryHandler(handle_callback))
-    logger.info("Bot is running...")
-    app.run_polling()
-#web server
+# === WEB SERVER ===
 async def handle(request):
     return web.Response(text="Bot is running!")
 
@@ -291,7 +297,10 @@ async def run_webserver():
     site = web.TCPSite(runner, "0.0.0.0", 10000)
     await site.start()
 
+# === MAIN BOT LOGIC ===
 async def run_bot():
+    load_data()
+
     app = ApplicationBuilder().token(TOKEN).build()
 
     redeem_handler = ConversationHandler(
@@ -305,12 +314,18 @@ async def run_bot():
     app.add_handler(redeem_handler)
     app.add_handler(CallbackQueryHandler(handle_callback))
 
-    logger.info("Bot is running...")
     await app.initialize()
     await app.start()
     await app.updater.start_polling()
-    await asyncio.Event().wait()
 
+    try:
+        await asyncio.Event().wait()
+    finally:
+        save_data()
+        await app.stop()
+        await app.shutdown()
+
+# === RUN TOGETHER ===
 async def main_all():
     await asyncio.gather(run_webserver(), run_bot())
 
