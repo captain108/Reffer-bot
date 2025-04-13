@@ -12,7 +12,7 @@ from telegram.ext import (
     ConversationHandler, MessageHandler, filters
 )
 
-TOKEN = "8073731661:AAEnHItKmA-Xo0bSXzb95UrGrsql-QaZEo0"
+TOKEN = "7716480281:AAFDWE8QVPP4vrYx30eMDDH8wFR1LEQWUK8"
 REQUIRED_CHANNELS = [
     "@ultracashonline",
     "@westbengalnetwork2",
