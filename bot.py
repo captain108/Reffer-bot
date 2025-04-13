@@ -1,3 +1,4 @@
+# (Your imports and config remain unchanged)
 import asyncio
 from aiohttp import web
 import logging
@@ -22,19 +23,15 @@ REQUIRED_CHANNELS = [
 ]
 ADMIN_ID = 5944513375
 
-# === LOGGING SETUP ===
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# === DATABASE ===
 users_data = {}
 WAITING_FOR_GMAIL = range(1)
 
-# === HELPERS ===
 def escape_markdown(text):
     return text.replace("_", "\\_")
 
-# === MENUS ===
 def main_menu():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("💰 Check Balance", callback_data="balance"),
@@ -102,13 +99,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if missing:
         join_buttons = [[
             InlineKeyboardButton(
-                f"Join Channel {i + 1}",
-                url=ch if ch.startswith("https://") else f"https://t.me/{ch.strip('@')}"
+                f"Join @{ch.strip('@')}",
+                url=f"https://t.me/{ch.strip('@')}"
             )
-        ] for i, ch in enumerate(REQUIRED_CHANNELS)]
+        ] for ch in missing]
         join_buttons.append([InlineKeyboardButton("✅ I've Joined All", callback_data="check_join")])
         await update.message.reply_text(
-            "📢 To use the bot, please join *all* required channels:",
+            "📢 To use the bot, please join *all* required public channels:",
             reply_markup=InlineKeyboardMarkup(join_buttons),
             parse_mode="Markdown"
         )
@@ -136,31 +133,33 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         users_data[user_id] = {"points": 0, "referrals": set(), "last_bonus": None}
     user_data = users_data[user_id]
 
+    # Enforce joining public channels only
+    missing = await get_missing_channels(user_id, context)
+    if missing and query.data != "check_join":
+        join_buttons = [[
+            InlineKeyboardButton(
+                f"Join @{ch.strip('@')}",
+                url=f"https://t.me/{ch.strip('@')}"
+            )
+        ] for ch in missing]
+        join_buttons.append([InlineKeyboardButton("✅ I've Joined All", callback_data="check_join")])
+        await query.edit_message_text(
+            "❗ You must join *all required public channels* to continue.",
+            reply_markup=InlineKeyboardMarkup(join_buttons),
+            parse_mode="Markdown"
+        )
+        return
+
     if query.data == "check_join":
-        missing = await get_missing_channels(user_id, context)
         if not missing:
             await query.edit_message_text("✅ You've joined all public channels!", reply_markup=main_menu())
-            for referrer_id, data in users_data.items():
-                if user_id in data.get("referrals", set()):
-                    await context.bot.send_message(
-                        chat_id=referrer_id,
-                        text=(
-                            f"🎉 *Your Referral Joined!*\n\n"
-                            f"Name: [{escape_markdown(user.first_name)}](tg://user?id={user_id})\n"
-                            f"ID: `{user_id}`\n"
-                            f"Username: @{escape_markdown(user.username or 'N/A')}\n"
-                            "has joined the required public channels and started the bot!"
-                        ),
-                        parse_mode="Markdown"
-                    )
-                    break
         else:
             join_buttons = [[
                 InlineKeyboardButton(
-                    f"Join Channel {i + 1}",
-                    url=ch if ch.startswith("https://") else f"https://t.me/{ch.strip('@')}"
+                    f"Join @{ch.strip('@')}",
+                    url=f"https://t.me/{ch.strip('@')}"
                 )
-            ] for i, ch in enumerate(REQUIRED_CHANNELS)]
+            ] for ch in missing]
             join_buttons.append([InlineKeyboardButton("✅ I've Joined All", callback_data="check_join")])
             await query.edit_message_text(
                 "❗ You're not in all required public channels. Please join them:",
@@ -274,12 +273,10 @@ async def handle_gmail_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
     )
     return ConversationHandler.END
 
-# === CANCEL ===
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❌ Redeem cancelled.", reply_markup=main_menu())
     return ConversationHandler.END
 
-# === MAIN ===
 async def run_webserver():
     app = web.Application()
     app.router.add_get("/", lambda request: web.Response(text="Bot is running!"))
