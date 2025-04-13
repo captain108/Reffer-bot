@@ -51,7 +51,7 @@ async def get_missing_channels(user_id, context):
     for channel in REQUIRED_CHANNELS:
         try:
             if channel.startswith("https://"):
-                missing.append(channel)  # can't check membership for private invite links
+                missing.append(channel)
             else:
                 member = await context.bot.get_chat_member(channel, user_id)
                 if member.status not in ['member', 'administrator', 'creator']:
@@ -99,10 +99,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if missing:
         join_buttons = [[
             InlineKeyboardButton(
-                f"Join {ch}" if ch.startswith("@") else "Join Private Channel",
+                f"Join Channel {i + 1}",
                 url=ch if ch.startswith("https://") else f"https://t.me/{ch.strip('@')}"
             )
-        ] for ch in missing]
+        ] for i, ch in enumerate(missing)]
         join_buttons.append([InlineKeyboardButton("✅ I've Joined All", callback_data="check_join")])
         await update.message.reply_text(
             "📢 To use the bot, please join *all* required channels:",
@@ -137,8 +137,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         missing = await get_missing_channels(user_id, context)
         if not missing:
             await query.edit_message_text("✅ You've joined all channels!", reply_markup=main_menu())
-
-            # Notify referrer
             for referrer_id, data in users_data.items():
                 if user_id in data.get("referrals", set()):
                     await context.bot.send_message(
@@ -156,10 +154,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             join_buttons = [[
                 InlineKeyboardButton(
-                    f"Join {ch}" if ch.startswith("@") else "Join Private Channel",
+                    f"Join Channel {i + 1}",
                     url=ch if ch.startswith("https://") else f"https://t.me/{ch.strip('@')}"
                 )
-            ] for ch in missing]
+            ] for i, ch in enumerate(missing)]
             join_buttons.append([InlineKeyboardButton("✅ I've Joined All", callback_data="check_join")])
             await query.edit_message_text(
                 "❗ You're not in all required channels. Please join them:",
@@ -181,7 +179,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         link = f"https://t.me/{context.bot.username}?start={user_id}"
         referrals = user_data["referrals"]
         count = len(referrals)
-
         if referrals:
             referral_text = ""
             for ref_id in referrals:
@@ -192,7 +189,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     referral_text += f"• User ID: `{ref_id}`\n"
         else:
             referral_text = "No referrals yet."
-
         await query.edit_message_text(
             f"🔗 *Your Referral Link:*\n`{link}`\n\n"
             f"👥 *Total Referrals:* `{count}`\n\n"
@@ -280,29 +276,9 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 # === MAIN ===
-def main():
-    app = ApplicationBuilder().token(TOKEN).build()
-
-    redeem_handler = ConversationHandler(
-        entry_points=[CallbackQueryHandler(handle_callback, pattern="^redeem$")],
-        states={WAITING_FOR_GMAIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_gmail_input)]},
-        fallbacks=[CommandHandler("cancel", cancel)],
-        allow_reentry=True
-    )
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(redeem_handler)
-    app.add_handler(CallbackQueryHandler(handle_callback))
-    logger.info("Bot is running...")
-    app.run_polling()
-
-# Web server
-async def handle(request):
-    return web.Response(text="Bot is running!")
-
 async def run_webserver():
     app = web.Application()
-    app.router.add_get("/", handle)
+    app.router.add_get("/", lambda request: web.Response(text="Bot is running!"))
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", 10000)
