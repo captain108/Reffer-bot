@@ -186,6 +186,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif query.data == "redeem":
+        if user_id not in users_data:
+            users_data[user_id] = {"points": 0, "referrals": set(), "last_bonus": None}
+        user_data = users_data[user_id]
+        logger.info(f"User {user_id} trying to redeem with {user_data['points']} points")
         if user_data["points"] >= 30:
             await query.edit_message_text(
                 "🎁 *Redeem Request Initiated!*\n\nPlease send your *Gmail address* to continue.",
@@ -237,7 +241,7 @@ async def handle_gmail_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
     user = update.effective_user
     user_id = user.id
     gmail = update.message.text.strip()
-    user_data = users_data[user_id]
+    user_data = users_data.setdefault(user_id, {"points": 0, "referrals": set(), "last_bonus": None})
     user_data["points"] -= 30
 
     await update.message.reply_text(
@@ -291,6 +295,12 @@ async def give_points(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"Error: {str(e)}")
 
+# === BALANCE CMD ===
+async def check_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user_data = users_data.setdefault(user_id, {"points": 0, "referrals": set(), "last_bonus": None})
+    await update.message.reply_text(f"💰 Your balance is: {user_data['points']} points")
+
 # === MAIN ===
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
@@ -306,6 +316,7 @@ def main():
     app.add_handler(redeem_handler)
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(CommandHandler("give", give_points))
+    app.add_handler(CommandHandler("balance", check_balance))
 
     logger.info("Bot is running...")
     app.run_polling()
@@ -336,6 +347,7 @@ async def run_bot():
     app.add_handler(redeem_handler)
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(CommandHandler("give", give_points))
+    app.add_handler(CommandHandler("balance", check_balance))
 
     logger.info("Bot is running...")
     await app.initialize()
