@@ -1,6 +1,2 @@
-aiohttp==3.8.1
-python-telegram-bot==20.0
-asyncio==3.4.3
-aiofiles==0.8.0
-Cython==0.29.24
-setuptools==56.0.0
+python-telegram-bot==20.6
+aiohttp==3.9.3
