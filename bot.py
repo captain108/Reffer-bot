@@ -30,6 +30,10 @@ logger = logging.getLogger(__name__)
 users_data = {}
 WAITING_FOR_GMAIL = range(1)
 
+# === HELPERS ===
+def escape_markdown(text):
+    return text.replace("_", "\\_")
+
 # === MENUS ===
 def main_menu():
     return InlineKeyboardMarkup([
@@ -45,17 +49,16 @@ def back_button():
         [InlineKeyboardButton("⬅️ Back to Menu", callback_data="menu")]
     ])
 
-# === CHANNEL CHECK ===
+# === CHANNEL CHECK (skip private channels) ===
 async def get_missing_channels(user_id, context):
     missing = []
     for channel in REQUIRED_CHANNELS:
+        if channel.startswith("https://"):
+            continue
         try:
-            if channel.startswith("https://"):
+            member = await context.bot.get_chat_member(channel, user_id)
+            if member.status not in ['member', 'administrator', 'creator']:
                 missing.append(channel)
-            else:
-                member = await context.bot.get_chat_member(channel, user_id)
-                if member.status not in ['member', 'administrator', 'creator']:
-                    missing.append(channel)
         except:
             missing.append(channel)
     return missing
@@ -72,9 +75,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             chat_id=ADMIN_ID,
             text=(
                 f"📢 *New User Started!*\n\n"
-                f"Name: [{user.first_name}](tg://user?id={user_id})\n"
+                f"Name: [{escape_markdown(user.first_name)}](tg://user?id={user_id})\n"
                 f"ID: `{user_id}`\n"
-                f"Username: @{user.username or 'N/A'}"
+                f"Username: @{escape_markdown(user.username or 'N/A')}"
             ),
             parse_mode="Markdown"
         )
@@ -88,12 +91,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 users_data[referrer_id]["points"] += 3
                 users_data[referrer_id]["referrals"].add(user_id)
                 ref_user = await context.bot.get_chat(referrer_id)
-                referrer_name = f"[{ref_user.first_name}](tg://user?id={referrer_id})"
+                referrer_name = f"[{escape_markdown(ref_user.first_name)}](tg://user?id={referrer_id})"
         except:
             pass
 
     owner_chat = await context.bot.get_chat(ADMIN_ID)
-    owner_mention = f"[{owner_chat.first_name}](tg://user?id={ADMIN_ID})"
+    owner_mention = f"[{escape_markdown(owner_chat.first_name)}](tg://user?id={ADMIN_ID})"
 
     missing = await get_missing_channels(user_id, context)
     if missing:
@@ -102,7 +105,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"Join Channel {i + 1}",
                 url=ch if ch.startswith("https://") else f"https://t.me/{ch.strip('@')}"
             )
-        ] for i, ch in enumerate(missing)]
+        ] for i, ch in enumerate(REQUIRED_CHANNELS)]
         join_buttons.append([InlineKeyboardButton("✅ I've Joined All", callback_data="check_join")])
         await update.message.reply_text(
             "📢 To use the bot, please join *all* required channels:",
@@ -112,7 +115,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     welcome = (
-        f"👋 *Welcome, {user.first_name}!* \n\n"
+        f"👋 *Welcome, {escape_markdown(user.first_name)}!* \n\n"
         "🎉 You're now part of the *Refer & Earn* program.\n"
         "💸 Invite friends, earn rewards, and enjoy your perks!"
     )
@@ -136,17 +139,17 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data == "check_join":
         missing = await get_missing_channels(user_id, context)
         if not missing:
-            await query.edit_message_text("✅ You've joined all channels!", reply_markup=main_menu())
+            await query.edit_message_text("✅ You've joined all public channels!", reply_markup=main_menu())
             for referrer_id, data in users_data.items():
                 if user_id in data.get("referrals", set()):
                     await context.bot.send_message(
                         chat_id=referrer_id,
                         text=(
                             f"🎉 *Your Referral Joined!*\n\n"
-                            f"Name: [{user.first_name}](tg://user?id={user_id})\n"
+                            f"Name: [{escape_markdown(user.first_name)}](tg://user?id={user_id})\n"
                             f"ID: `{user_id}`\n"
-                            f"Username: @{user.username or 'N/A'}\n"
-                            "has joined all required channels and started the bot!"
+                            f"Username: @{escape_markdown(user.username or 'N/A')}\n"
+                            "has joined the required public channels and started the bot!"
                         ),
                         parse_mode="Markdown"
                     )
@@ -157,10 +160,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"Join Channel {i + 1}",
                     url=ch if ch.startswith("https://") else f"https://t.me/{ch.strip('@')}"
                 )
-            ] for i, ch in enumerate(missing)]
+            ] for i, ch in enumerate(REQUIRED_CHANNELS)]
             join_buttons.append([InlineKeyboardButton("✅ I've Joined All", callback_data="check_join")])
             await query.edit_message_text(
-                "❗ You're not in all required channels. Please join them:",
+                "❗ You're not in all required public channels. Please join them:",
                 reply_markup=InlineKeyboardMarkup(join_buttons),
                 parse_mode="Markdown"
             )
@@ -179,16 +182,17 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         link = f"https://t.me/{context.bot.username}?start={user_id}"
         referrals = user_data["referrals"]
         count = len(referrals)
+        referral_text = ""
         if referrals:
-            referral_text = ""
             for ref_id in referrals:
                 try:
                     ref_user = await context.bot.get_chat(ref_id)
-                    referral_text += f"• [{ref_user.first_name}](tg://user?id={ref_id})\n"
+                    referral_text += f"• [{escape_markdown(ref_user.first_name)}](tg://user?id={ref_id})\n"
                 except:
                     referral_text += f"• User ID: `{ref_id}`\n"
         else:
             referral_text = "No referrals yet."
+
         await query.edit_message_text(
             f"🔗 *Your Referral Link:*\n`{link}`\n\n"
             f"👥 *Total Referrals:* `{count}`\n\n"
@@ -262,7 +266,7 @@ async def handle_gmail_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
         chat_id=ADMIN_ID,
         text=(
             f"📬 *New Redemption Request*\n\n"
-            f"User: [{user.first_name}](tg://user?id={user_id})\n"
+            f"User: [{escape_markdown(user.first_name)}](tg://user?id={user_id})\n"
             f"Gmail: `{gmail}`\n"
             f"Remaining Points: `{user_data['points']}`"
         ),
