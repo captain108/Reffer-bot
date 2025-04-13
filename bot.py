@@ -75,16 +75,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown"
         )
 
-    referrer_name = None
     if args:
         try:
             referrer_id = int(args[0])
-            if referrer_id != user_id and user_id not in users_data.get(referrer_id, {}).get("referrals", set()):
-                users_data.setdefault(referrer_id, {"points": 0, "referrals": set(), "last_bonus": None})
-                users_data[referrer_id]["points"] += 3
-                users_data[referrer_id]["referrals"].add(user_id)
-                ref_user = await context.bot.get_chat(referrer_id)
-                referrer_name = f"[{escape_markdown(ref_user.first_name)}](tg://user?id={referrer_id})"
+            if referrer_id != user_id:
+                users_data[user_id]["pending_referrer"] = referrer_id
+                users_data[user_id]["was_referred"] = True
         except:
             pass
 
@@ -112,8 +108,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🎉 You're now part of the *Refer & Earn* program.\n"
         "💸 Invite friends, earn rewards, and enjoy your perks!"
     )
-    if referrer_name:
-        welcome += f"\n\n🙌 You were invited by {referrer_name} — show them some love!"
     welcome += f"\n\n🛠️ For help or support, contact {owner_mention}."
 
     await update.message.reply_text(welcome, reply_markup=main_menu(), parse_mode="Markdown")
@@ -161,6 +155,23 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data == "check_join":
         missing = await get_missing_channels(user_id, context)
         if not missing:
+            pending_ref = users_data[user_id].pop("pending_referrer", None)
+            if pending_ref and user_id not in users_data.get(pending_ref, {}).get("referrals", set()):
+                if not users_data.get(pending_ref, {}).get("was_referred", False):
+                    users_data.setdefault(pending_ref, {"points": 0, "referrals": set(), "last_bonus": None})
+                    users_data[pending_ref]["points"] += 3
+                    users_data[pending_ref]["referrals"].add(user_id)
+
+                    await context.bot.send_message(
+                        chat_id=pending_ref,
+                        text=(
+                            f"🎉 *Your Referral Just Joined!*\n\n"
+                            f"Name: [{escape_markdown(user.first_name)}](tg://user?id={user_id})\n"
+                            f"has completed channel verification and earned you *3 points!*"
+                        ),
+                        parse_mode="Markdown"
+                    )
+
             await query.edit_message_text("✅ You've joined all public channels!", reply_markup=main_menu())
         else:
             join_buttons = [[
