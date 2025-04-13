@@ -13,8 +13,13 @@ from telegram.ext import (
 )
 
 # === CONFIGURATION ===
-TOKEN = "8037210105:AAFbBznD3Mf1rGgGZdrlYoYXAEijr8JEuSg"
-REQUIRED_CHANNELS = ["@ultracashonline", "@westbengalnetwork2"]
+TOKEN = "8073731661:AAEnHItKmA-Xo0bSXzb95UrGrsql-QaZEo0"
+REQUIRED_CHANNELS = [
+    "@ultracashonline",
+    "@westbengalnetwork2",
+    "@ui_zone",
+    "https://t.me/+L4ek5JLdYu0zZDg1"
+]
 ADMIN_ID = 5944513375
 
 # === LOGGING SETUP ===
@@ -45,9 +50,12 @@ async def get_missing_channels(user_id, context):
     missing = []
     for channel in REQUIRED_CHANNELS:
         try:
-            member = await context.bot.get_chat_member(channel, user_id)
-            if member.status not in ['member', 'administrator', 'creator']:
-                missing.append(channel)
+            if channel.startswith("https://"):
+                missing.append(channel)  # can't check membership for private invite links
+            else:
+                member = await context.bot.get_chat_member(channel, user_id)
+                if member.status not in ['member', 'administrator', 'creator']:
+                    missing.append(channel)
         except:
             missing.append(channel)
     return missing
@@ -89,8 +97,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     missing = await get_missing_channels(user_id, context)
     if missing:
-        join_buttons = [[InlineKeyboardButton(f"Join {ch}", url=f"https://t.me/{ch.strip('@')}")]
-                        for ch in missing]
+        join_buttons = [[
+            InlineKeyboardButton(
+                f"Join {ch}" if ch.startswith("@") else "Join Private Channel",
+                url=ch if ch.startswith("https://") else f"https://t.me/{ch.strip('@')}"
+            )
+        ] for ch in missing]
         join_buttons.append([InlineKeyboardButton("✅ I've Joined All", callback_data="check_join")])
         await update.message.reply_text(
             "📢 To use the bot, please join *all* required channels:",
@@ -142,8 +154,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                     break
         else:
-            join_buttons = [[InlineKeyboardButton(f"Join {ch}", url=f"https://t.me/{ch.strip('@')}")]
-                            for ch in missing]
+            join_buttons = [[
+                InlineKeyboardButton(
+                    f"Join {ch}" if ch.startswith("@") else "Join Private Channel",
+                    url=ch if ch.startswith("https://") else f"https://t.me/{ch.strip('@')}"
+                )
+            ] for ch in missing]
             join_buttons.append([InlineKeyboardButton("✅ I've Joined All", callback_data="check_join")])
             await query.edit_message_text(
                 "❗ You're not in all required channels. Please join them:",
@@ -186,10 +202,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif query.data == "redeem":
-        if user_id not in users_data:
-            users_data[user_id] = {"points": 0, "referrals": set(), "last_bonus": None}
-        user_data = users_data[user_id]
-        logger.info(f"User {user_id} trying to redeem with {user_data['points']} points")
         if user_data["points"] >= 30:
             await query.edit_message_text(
                 "🎁 *Redeem Request Initiated!*\n\nPlease send your *Gmail address* to continue.",
@@ -241,7 +253,7 @@ async def handle_gmail_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
     user = update.effective_user
     user_id = user.id
     gmail = update.message.text.strip()
-    user_data = users_data.setdefault(user_id, {"points": 0, "referrals": set(), "last_bonus": None})
+    user_data = users_data[user_id]
     user_data["points"] -= 30
 
     await update.message.reply_text(
@@ -267,40 +279,6 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❌ Redeem cancelled.", reply_markup=main_menu())
     return ConversationHandler.END
 
-# === GIVE POINTS ===
-async def give_points(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("⛔ You are not authorized to use this command.")
-        return
-
-    if len(context.args) != 2:
-        await update.message.reply_text("Usage: /give user_id points")
-        return
-
-    try:
-        user_id = int(context.args[0])
-        points_to_add = int(context.args[1])
-        user_data = users_data.setdefault(user_id, {"points": 0, "referrals": set(), "last_bonus": None})
-        user_data["points"] += points_to_add
-
-        await update.message.reply_text(f"✅ Added {points_to_add} points to user `{user_id}`.")
-        try:
-            await context.bot.send_message(
-                chat_id=user_id,
-                text=f"💰 *You've received {points_to_add} points* from the admin!",
-                parse_mode="Markdown"
-            )
-        except:
-            pass
-    except Exception as e:
-        await update.message.reply_text(f"Error: {str(e)}")
-
-# === BALANCE CMD ===
-async def check_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    user_data = users_data.setdefault(user_id, {"points": 0, "referrals": set(), "last_bonus": None})
-    await update.message.reply_text(f"💰 Your balance is: {user_data['points']} points")
-
 # === MAIN ===
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
@@ -315,13 +293,10 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(redeem_handler)
     app.add_handler(CallbackQueryHandler(handle_callback))
-    app.add_handler(CommandHandler("give", give_points))
-    app.add_handler(CommandHandler("balance", check_balance))
-
     logger.info("Bot is running...")
     app.run_polling()
 
-# === WEB SERVER ===
+# Web server
 async def handle(request):
     return web.Response(text="Bot is running!")
 
@@ -346,8 +321,6 @@ async def run_bot():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(redeem_handler)
     app.add_handler(CallbackQueryHandler(handle_callback))
-    app.add_handler(CommandHandler("give", give_points))
-    app.add_handler(CommandHandler("balance", check_balance))
 
     logger.info("Bot is running...")
     await app.initialize()
