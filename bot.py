@@ -12,12 +12,15 @@ from telegram.ext import (
     ConversationHandler, MessageHandler, filters
 )
 
-TOKEN = "8008753285:AAFqB23jXCu6bdplg1qKVnXgNLb8PSW5RAs"
+TOKEN = "8124555249:AAF398xj13BSYzAOIQe3fXgDZUURmGbyOYE"
 REQUIRED_CHANNELS = [
     "@ultracashonline",
     "@westbengalnetwork2",
     "@ui_zone",
-    "https://t.me/+L4ek5JLdYu0zZDg1"
+    "https://t.me/+L4ek5JLdYu0zZDg1",
+    "https://t.me/+x5WHZ8PJfxE3Yjll",
+    "https://t.me/capxpremium",
+    "https://t.me/earnxcaptain"
 ]
 ADMIN_ID = 5944513375
 users_data = {}
