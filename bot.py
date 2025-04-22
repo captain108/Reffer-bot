@@ -1,247 +1,122 @@
-import asyncio
-import logging
-import random
-from datetime import datetime, timedelta
 
-from aiohttp import web
-from telegram import (
-    Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove
-)
-from telegram.ext import (
-    ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes,
-    ConversationHandler, MessageHandler, filters
-)
+import os
+import re
+import sqlite3
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from telegram.helpers import escape_markdown
+from dotenv import load_dotenv
 
-TOKEN = "8124555249:AAF398xj13BSYzAOIQe3fXgDZUURmGbyOYE"
+# Load environment variables
+load_dotenv()
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+REDEMPTION_LOG_CHANNEL = "@capxpremium"  # Log redemptions here
+IMAGE_PATH = "/mnt/data/file-ELmLXV23qaHUztbxNNjMya"  # Redemption image
+
+# Channel join check (replace with actual channel ID for private one)
 REQUIRED_CHANNELS = [
-    "@ultracashonline",
-    "@westbengalnetwork2",
-    "@ui_zone",
-    "https://t.me/+L4ek5JLdYu0zZDg1",
-    "https://t.me/+x5WHZ8PJfxE3Yjll",
-    "https://t.me/capxpremium",
-    "https://t.me/earnxcaptain"
+    "@earnxcaptain",
+    "@capxpremium",
+    "-1002120123969",
+    "westbengalnetwork2"# Use your bot's actual private channel ID
 ]
-ADMIN_ID = 5944513375
-users_data = {}
-WAITING_FOR_GMAIL = range(1)
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# SQLite setup
+conn = sqlite3.connect("users.db", check_same_thread=False)
+cursor = conn.cursor()
+cursor.execute('''CREATE TABLE IF NOT EXISTS users (
+    user_id INTEGER PRIMARY KEY,
+    username TEXT,
+    points INTEGER DEFAULT 0,
+    referred_by INTEGER,
+    gmail TEXT
+)''')
+conn.commit()
 
-
-def escape_markdown(text):
-    return text.replace("_", "\\_")
-
-
-def main_menu():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("💰 Check Balance", callback_data="balance"),
-         InlineKeyboardButton("🔗 Referral Info", callback_data="referral_info")],
-        [InlineKeyboardButton("🎁 Redeem", callback_data="redeem"),
-         InlineKeyboardButton("✅ Daily Bonus", callback_data="daily_bonus")],
-        [InlineKeyboardButton("📘 How to Earn?", callback_data="how_to_earn")]
-    ])
-
-
-def back_button():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("⬅️ Back to Menu", callback_data="menu")]
-    ])
-
-
-async def get_missing_channels(user_id, context):
-    missing = []
-    for channel in REQUIRED_CHANNELS:
-        if channel.startswith("https://"):
-            continue
-        try:
-            member = await context.bot.get_chat_member(channel, user_id)
-            if member.status not in ['member', 'administrator', 'creator']:
-                missing.append(channel)
-        except:
-            missing.append(channel)
-    return missing
-
-
+# /start command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
-    args = context.args
+    username = user.username or "N/A"
+    referred_by = int(context.args[0]) if context.args and context.args[0].isdigit() else None
 
-    if user_id not in users_data:
-        users_data[user_id] = {"points": 0, "referrals": set(), "last_bonus": None}
-        await context.bot.send_message(
-            ADMIN_ID,
-            f"📢 *New User Started!*\n\nName: [{escape_markdown(user.first_name)}](tg://user?id={user_id})\n"
-            f"ID: `{user_id}`\nUsername: @{escape_markdown(user.username or 'N/A')}",
-            parse_mode="Markdown"
-        )
+    cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
+    if not cursor.fetchone():
+        cursor.execute("INSERT INTO users (user_id, username, points, referred_by) VALUES (?, ?, 0, ?)",
+                       (user_id, username, referred_by))
+        conn.commit()
+        if referred_by:
+            cursor.execute("UPDATE users SET points = points + 1 WHERE user_id = ?", (referred_by,))
+            conn.commit()
+    await update.message.reply_text("✅ Welcome! Use /points to check your balance or /redeem to redeem points.")
 
-    if args:
-        try:
-            referrer_id = int(args[0])
-            if referrer_id != user_id:
-                users_data[user_id]["pending_referrer"] = referrer_id
-                users_data[user_id]["was_referred"] = True
-        except:
-            pass
-
-    owner = await context.bot.get_chat(ADMIN_ID)
-    missing = await get_missing_channels(user_id, context)
-    if missing:
-        join_buttons = [[
-            InlineKeyboardButton(f"Join @{ch.strip('@')}", url=f"https://t.me/{ch.strip('@')}")
-        ] for ch in missing]
-        join_buttons.append([InlineKeyboardButton("✅ I've Joined All", callback_data="check_join")])
-        await update.message.reply_text(
-            "📢 To use the bot, please join *all* required public channels:",
-            reply_markup=InlineKeyboardMarkup(join_buttons),
-            parse_mode="Markdown"
-        )
-        return
-
-    welcome = f"👋 *Welcome, {escape_markdown(user.first_name)}!* \n\n🎉 You're now part of the *Refer & Earn* program.\n" \
-              "💸 Invite friends, earn rewards, and enjoy your perks!\n\n" \
-              f"🛠️ For help or support, contact [{escape_markdown(owner.first_name)}](tg://user?id={ADMIN_ID})."
-    await update.message.reply_text(welcome, reply_markup=main_menu(), parse_mode="Markdown")
-
-
-async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    user = query.from_user
-    user_id = user.id
-    await query.answer()
-
-    if user_id not in users_data:
-        users_data[user_id] = {"points": 0, "referrals": set(), "last_bonus": None}
-    user_data = users_data[user_id]
-
-    if query.data != "check_join":
-        missing = await get_missing_channels(user_id, context)
-        if missing:
-            join_buttons = [[
-                InlineKeyboardButton(f"Join @{ch.strip('@')}", url=f"https://t.me/{ch.strip('@')}")
-            ] for ch in missing]
-            join_buttons.append([InlineKeyboardButton("✅ I've Joined All", callback_data="check_join")])
-            await query.edit_message_text(
-                "❗ You must join *all required public channels* to continue.",
-                reply_markup=InlineKeyboardMarkup(join_buttons),
-                parse_mode="Markdown"
-            )
-            return
-
-    if query.data == "check_join":
-        missing = await get_missing_channels(user_id, context)
-        if not missing:
-            ref = users_data[user_id].pop("pending_referrer", None)
-            if ref and user_id not in users_data.get(ref, {}).get("referrals", set()):
-                if not users_data.get(ref, {}).get("was_referred", False):
-                    users_data.setdefault(ref, {"points": 0, "referrals": set(), "last_bonus": None})
-                    users_data[ref]["points"] += 3
-                    users_data[ref]["referrals"].add(user_id)
-                    await context.bot.send_message(
-                        chat_id=ref,
-                        text=f"🎉 Your referral [{escape_markdown(user.first_name)}](tg://user?id={user_id}) just joined and earned you 3 points!",
-                        parse_mode="Markdown"
-                    )
-            await query.edit_message_text("✅ You've joined all public channels!", reply_markup=main_menu())
-        else:
-            await query.edit_message_text("❗ Still missing some channels.", reply_markup=main_menu())
-        return
-
-    if query.data == "balance":
-        await query.edit_message_text(f"💰 Your balance: `{user_data['points']} points`", parse_mode="Markdown",
-                                      reply_markup=back_button())
-
-    elif query.data == "referral_info":
-        link = f"https://t.me/{context.bot.username}?start={user_id}"
-        refs = "\n".join(
-            f"• [{escape_markdown(await context.bot.get_chat(uid).first_name)}](tg://user?id={uid})"
-            for uid in user_data["referrals"]
-        ) or "No referrals yet."
-        await query.edit_message_text(
-            f"🔗 *Your Referral Link:*\n`{link}`\n\n👥 *Referrals: {len(user_data['referrals'])}*\n\n{refs}",
-            parse_mode="Markdown", reply_markup=back_button())
-
-    elif query.data == "redeem":
-        if user_data["points"] >= 30:
-            await query.edit_message_text("🎁 Please send your *Gmail address* to redeem your reward.",
-                                          parse_mode="Markdown", reply_markup=ReplyKeyboardRemove())
-            return WAITING_FOR_GMAIL
-        else:
-            await query.edit_message_text("⚠️ Not enough points! You need at least 30.", reply_markup=back_button(),
-                                          parse_mode="Markdown")
-
-    elif query.data == "daily_bonus":
-        now = datetime.utcnow()
-        if not user_data["last_bonus"] or now - user_data["last_bonus"] >= timedelta(days=1):
-            dice = await context.bot.send_dice(chat_id=user_id, emoji="🎲")
-            rolled = dice.dice.value
-            user_data["points"] += rolled
-            user_data["last_bonus"] = now
-            await query.message.delete()
-            await context.bot.send_message(user_id, f"🎉 You rolled a {rolled} and earned +{rolled} points!",
-                                           reply_markup=back_button(), parse_mode="Markdown")
-        else:
-            next_bonus = user_data["last_bonus"] + timedelta(days=1)
-            hours_left = int((next_bonus - now).total_seconds() // 3600)
-            await query.edit_message_text(f"⏳ Bonus already claimed. Try again in {hours_left} hours.",
-                                          reply_markup=back_button(), parse_mode="Markdown")
-
-    elif query.data == "how_to_earn":
-        await query.edit_message_text("📘 *Earn Points:*\n\n• +3 per referral\n• +1–6 daily bonus\n• 30 to redeem",
-                                      parse_mode="Markdown", reply_markup=back_button())
-
-    elif query.data == "menu":
-        await query.edit_message_text("🏠 Main Menu", reply_markup=main_menu(), parse_mode="Markdown")
-
-
-async def handle_gmail_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# /points command
+async def points(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    gmail = update.message.text.strip()
-    users_data[user_id]["points"] -= 30
-    await update.message.reply_text("✅ Gmail received. Our team will contact you shortly.",
-                                    reply_markup=main_menu())
-    await context.bot.send_message(
-        chat_id=ADMIN_ID,
-        text=f"📥 *Redeem Request:*\n\nUser: `{user_id}`\nGmail: `{gmail}`\nPoints Left: {users_data[user_id]['points']}",
-        parse_mode="Markdown"
-    )
-    return ConversationHandler.END
+    cursor.execute("SELECT points FROM users WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    if row:
+        await update.message.reply_text(f"💰 You have {row[0]} points.")
+    else:
+        await update.message.reply_text("❌ You are not registered. Use /start to begin.")
 
+# /redeem command
+async def redeem(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    user_id = user.id
+    username = user.username or "N/A"
 
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("❌ Redeem cancelled.", reply_markup=main_menu())
-    return ConversationHandler.END
+    # Require Gmail argument
+    if not context.args:
+        return await update.message.reply_text("❗ Usage: /redeem your_gmail@gmail.com")
+    gmail = context.args[0]
 
+    # Validate Gmail
+    if not re.fullmatch(r"[a-zA-Z0-9_.+-]+@gmail\.com", gmail):
+        return await update.message.reply_text("❌ Invalid Gmail. Please use a valid @gmail.com address.")
 
-async def run_webserver():
-    app = web.Application()
-    app.router.add_get("/", lambda req: web.Response(text="Bot is running!"))
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", 10000)
-    await site.start()
+    # Check channel membership
+    for ch in REQUIRED_CHANNELS:
+        try:
+            member = await context.bot.get_chat_member(chat_id=ch, user_id=user_id)
+            if member.status not in ["member", "administrator", "creator"]:
+                return await update.message.reply_text("❗ You must join all required channels before redeeming.")
+        except Exception as e:
+            return await update.message.reply_text(f"❗ Error checking channel {ch}. Please make sure you're joined.")
 
+    # Check points
+    cursor.execute("SELECT points FROM users WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    if not row or row[0] < 5:
+        return await update.message.reply_text("⚠️ You need at least 5 points to redeem.")
 
-async def run_bot():
-    app = ApplicationBuilder().token(TOKEN).build()
+    # Deduct points and store Gmail
+    new_points = row[0] - 5
+    cursor.execute("UPDATE users SET points = ?, gmail = ? WHERE user_id = ?", (new_points, gmail, user_id))
+    conn.commit()
 
-    redeem_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(handle_callback, pattern="^redeem$")],
-        states={WAITING_FOR_GMAIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_gmail_input)]},
-        fallbacks=[CommandHandler("cancel", cancel)],
-        allow_reentry=True
-    )
+    await update.message.reply_text(f"✅ Redemption successful for {gmail}. Points left: {new_points}")
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(redeem_conv)
-    app.add_handler(CallbackQueryHandler(handle_callback))
+    # Post to log channel with image
+    with open(IMAGE_PATH, "rb") as img:
+        await context.bot.send_photo(
+            chat_id=REDEMPTION_LOG_CHANNEL,
+            photo=img,
+            caption=(
+                f"🎉 *New Redemption!*\n\n"
+                f"User: [{escape_markdown(user.first_name)}](tg://user?id={user.id})\n"
+                f"Username: @{username}\n"
+                f"Gmail: `{gmail}`\n"
+                f"Points Left: {new_points}"
+            ),
+            parse_mode="Markdown"
+        )
 
-    logger.info("Bot is running...")
-    await app.run_polling()
-
-
+# Main entry
 if __name__ == "__main__":
-    asyncio.run(asyncio.gather(run_webserver(), run_bot()))
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("points", points))
+    app.add_handler(CommandHandler("redeem", redeem))
+    print("Bot is running...")
+    app.run_polling()
