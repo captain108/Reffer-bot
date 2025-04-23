@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 
 # === CONFIGURATION ===
 load_dotenv()
-TOKEN = os.getenv("BOT_TOKEN")
+TOKEN = os.getenv("7836593462:AAGwMG4vTpOWE6DVapZaRKTUml6D5iSgkhc")
 REQUIRED_CHANNELS = ["@ultracashonline", "@westbengalnetwork2"]
 PRIVATE_CHANNELS = ["@privateexamplechannel"]
 ADMINS = [5944513375, 1808053774]  # Replace with actual admin IDs
