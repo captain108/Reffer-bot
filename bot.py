@@ -1,122 +1,142 @@
-
+import logging
 import os
-import re
 import sqlite3
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
-from telegram.helpers import escape_markdown
+from aiogram import Bot, Dispatcher, types, executor
+from aiogram.types import InputFile
+from aiogram.utils.exceptions import ChatNotFound
 from dotenv import load_dotenv
 
-# Load environment variables
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-REDEMPTION_LOG_CHANNEL = "@capxpremium"  # Log redemptions here
-IMAGE_PATH = "/mnt/data/file-ELmLXV23qaHUztbxNNjMya"  # Redemption image
+ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x]
+CHANNEL_IDS = [int(x) for x in os.getenv("CHANNEL_IDS", "").split(",")]  # Required public channels
+PRIVATE_CHANNEL_ID = int(os.getenv("PRIVATE_CHANNEL_ID"))  # Optional private channel
+REDEMPTION_LOG_CHANNEL = int(os.getenv("REDEMPTION_LOG_CHANNEL"))  # Where bot posts official redemption message
 
-# Channel join check (replace with actual channel ID for private one)
-REQUIRED_CHANNELS = [
-    "@earnxcaptain",
-    "@capxpremium",
-    "-1002120123969",
-    "westbengalnetwork2"# Use your bot's actual private channel ID
-]
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher(bot)
+logging.basicConfig(level=logging.INFO)
 
-# SQLite setup
-conn = sqlite3.connect("users.db", check_same_thread=False)
+conn = sqlite3.connect("referral_bot.db")
 cursor = conn.cursor()
 cursor.execute('''CREATE TABLE IF NOT EXISTS users (
     user_id INTEGER PRIMARY KEY,
-    username TEXT,
-    points INTEGER DEFAULT 0,
     referred_by INTEGER,
-    gmail TEXT
+    verified INTEGER DEFAULT 0,
+    points INTEGER DEFAULT 0
 )''')
 conn.commit()
 
-# /start command
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    user_id = user.id
-    username = user.username or "N/A"
-    referred_by = int(context.args[0]) if context.args and context.args[0].isdigit() else None
-
-    cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
-    if not cursor.fetchone():
-        cursor.execute("INSERT INTO users (user_id, username, points, referred_by) VALUES (?, ?, 0, ?)",
-                       (user_id, username, referred_by))
-        conn.commit()
-        if referred_by:
-            cursor.execute("UPDATE users SET points = points + 1 WHERE user_id = ?", (referred_by,))
-            conn.commit()
-    await update.message.reply_text("✅ Welcome! Use /points to check your balance or /redeem to redeem points.")
-
-# /points command
-async def points(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    cursor.execute("SELECT points FROM users WHERE user_id = ?", (user_id,))
-    row = cursor.fetchone()
-    if row:
-        await update.message.reply_text(f"💰 You have {row[0]} points.")
-    else:
-        await update.message.reply_text("❌ You are not registered. Use /start to begin.")
-
-# /redeem command
-async def redeem(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    user_id = user.id
-    username = user.username or "N/A"
-
-    # Require Gmail argument
-    if not context.args:
-        return await update.message.reply_text("❗ Usage: /redeem your_gmail@gmail.com")
-    gmail = context.args[0]
-
-    # Validate Gmail
-    if not re.fullmatch(r"[a-zA-Z0-9_.+-]+@gmail\.com", gmail):
-        return await update.message.reply_text("❌ Invalid Gmail. Please use a valid @gmail.com address.")
-
-    # Check channel membership
-    for ch in REQUIRED_CHANNELS:
-        try:
-            member = await context.bot.get_chat_member(chat_id=ch, user_id=user_id)
-            if member.status not in ["member", "administrator", "creator"]:
-                return await update.message.reply_text("❗ You must join all required channels before redeeming.")
-        except Exception as e:
-            return await update.message.reply_text(f"❗ Error checking channel {ch}. Please make sure you're joined.")
-
-    # Check points
-    cursor.execute("SELECT points FROM users WHERE user_id = ?", (user_id,))
-    row = cursor.fetchone()
-    if not row or row[0] < 5:
-        return await update.message.reply_text("⚠️ You need at least 5 points to redeem.")
-
-    # Deduct points and store Gmail
-    new_points = row[0] - 5
-    cursor.execute("UPDATE users SET points = ?, gmail = ? WHERE user_id = ?", (new_points, gmail, user_id))
+def add_user(user_id, referred_by=None):
+    cursor.execute("INSERT OR IGNORE INTO users (user_id, referred_by) VALUES (?, ?)", (user_id, referred_by))
     conn.commit()
 
-    await update.message.reply_text(f"✅ Redemption successful for {gmail}. Points left: {new_points}")
+def get_points(user_id):
+    cursor.execute("SELECT points FROM users WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    return row[0] if row else 0
 
-    # Post to log channel with image
-    with open(IMAGE_PATH, "rb") as img:
-        await context.bot.send_photo(
-            chat_id=REDEMPTION_LOG_CHANNEL,
-            photo=img,
-            caption=(
-                f"🎉 *New Redemption!*\n\n"
-                f"User: [{escape_markdown(user.first_name)}](tg://user?id={user.id})\n"
-                f"Username: @{username}\n"
-                f"Gmail: `{gmail}`\n"
-                f"Points Left: {new_points}"
-            ),
-            parse_mode="Markdown"
-        )
+def add_points(user_id, amount):
+    cursor.execute("UPDATE users SET points = points + ? WHERE user_id = ?", (amount, user_id))
+    conn.commit()
 
-# Main entry
-if __name__ == "__main__":
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("points", points))
-    app.add_handler(CommandHandler("redeem", redeem))
-    print("Bot is running...")
-    app.run_polling()
+def mark_verified(user_id):
+    cursor.execute("UPDATE users SET verified = 1 WHERE user_id = ?", (user_id,))
+    conn.commit()
+
+def mark_unverified(user_id):
+    cursor.execute("UPDATE users SET verified = 0 WHERE user_id = ?", (user_id,))
+    conn.commit()
+
+def is_verified(user_id):
+    cursor.execute("SELECT verified FROM users WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    return row and row[0] == 1
+
+@dp.message_handler(commands=['start'])
+async def start_cmd(message: types.Message):
+    user_id = message.from_user.id
+    args = message.get_args()
+    referred_by = int(args) if args.isdigit() and int(args) != user_id else None
+
+    add_user(user_id, referred_by)
+
+    if referred_by:
+        add_points(referred_by, 30)
+        await bot.send_message(referred_by, f"{message.from_user.full_name} joined using your referral link! You earned 30 points.")
+        for admin_id in ADMIN_IDS:
+            await bot.send_message(admin_id, f"New user {message.from_user.full_name} joined via referral link of {referred_by}.")
+
+    await message.answer("Welcome! Please verify your channel membership by sending /verify")
+
+@dp.message_handler(commands=['verify'])
+async def verify_cmd(message: types.Message):
+    user_id = message.from_user.id
+    failed = []
+
+    for channel_id in CHANNEL_IDS:
+        try:
+            member = await bot.get_chat_member(channel_id, user_id)
+            if member.status not in ["member", "administrator", "creator"]:
+                failed.append(channel_id)
+        except ChatNotFound:
+            failed.append(channel_id)
+
+    if failed:
+        await message.reply("You must join all required public channels to verify.")
+        mark_unverified(user_id)
+    else:
+        mark_verified(user_id)
+        await message.reply("Verification successful!")
+
+@dp.message_handler(commands=['redeem'])
+async def redeem_cmd(message: types.Message):
+    user_id = message.from_user.id
+    if not is_verified(user_id):
+        return await message.reply("You're not verified. Join required channels and use /verify.")
+
+    points = get_points(user_id)
+    if points < 30:
+        return await message.reply("You need at least 30 points to redeem.")
+
+    add_points(user_id, -30)
+    await message.reply("Your redemption request has been sent to the admins. Please wait for approval or contact support.")
+
+    for admin_id in ADMIN_IDS:
+        await bot.send_message(admin_id, f"User {message.from_user.full_name} ({user_id}) has redeemed 30 points!")
+
+    # Send official message to log channel with trophy image
+    trophy_image = InputFile("trophy.jpg")  # Make sure this file exists in your folder
+    await bot.send_photo(
+        chat_id=REDEMPTION_LOG_CHANNEL,
+        photo=trophy_image,
+        caption=f"{message.from_user.full_name} just redeemed 30 points! Congratulations!"
+    )
+
+@dp.message_handler(commands=['check'])
+async def check_cmd(message: types.Message):
+    user_id = message.from_user.id
+    points = get_points(user_id)
+    await message.reply(f"You have {points} points.")
+
+@dp.message_handler(commands=['recheck'])
+async def recheck_cmd(message: types.Message):
+    user_id = message.from_user.id
+    failed = []
+
+    for channel_id in CHANNEL_IDS:
+        try:
+            member = await bot.get_chat_member(channel_id, user_id)
+            if member.status not in ["member", "administrator", "creator"]:
+                failed.append(channel_id)
+        except:
+            failed.append(channel_id)
+
+    if failed:
+        mark_unverified(user_id)
+        await message.reply("You left required public channels. Please rejoin and use /verify.")
+    else:
+        await message.reply("You're still verified.")
+
+if __name__ == '__main__':
+    executor.start_polling(dp, skip_updates=True)
