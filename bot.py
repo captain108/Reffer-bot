@@ -1,142 +1,244 @@
+import asyncio
+from aiohttp import web
 import logging
 import os
 import sqlite3
-from aiogram import Bot, Dispatcher, types, executor
-from aiogram.types import InputFile
-from aiogram.utils.exceptions import ChatNotFound
+from datetime import datetime, timedelta
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove, InputFile
+from telegram.ext import (
+    ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes,
+    ConversationHandler, MessageHandler, filters
+)
 from dotenv import load_dotenv
 
+# === CONFIGURATION ===
 load_dotenv()
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x]
-CHANNEL_IDS = [int(x) for x in os.getenv("CHANNEL_IDS", "").split(",")]  # Required public channels
-PRIVATE_CHANNEL_ID = int(os.getenv("PRIVATE_CHANNEL_ID"))  # Optional private channel
-REDEMPTION_LOG_CHANNEL = int(os.getenv("REDEMPTION_LOG_CHANNEL"))  # Where bot posts official redemption message
+TOKEN = os.getenv("BOT_TOKEN")
+REQUIRED_CHANNELS = ["@ultracashonline", "@westbengalnetwork2"]
+PRIVATE_CHANNELS = ["@privateexamplechannel"]
+ADMINS = [5944513375, 1808053774]  # Replace with actual admin IDs
+FOLDER_LINK = "https://t.me/addlist/RlzqLqKxFOk2NGVl"
+REDEMPTION_CHANNEL = "@earnxcaptain"
 
-bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher(bot)
+# === LOGGING ===
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-conn = sqlite3.connect("referral_bot.db")
-cursor = conn.cursor()
-cursor.execute('''CREATE TABLE IF NOT EXISTS users (
+# === DATABASE ===
+conn = sqlite3.connect("referral_bot.db", check_same_thread=False)
+c = conn.cursor()
+c.execute("""CREATE TABLE IF NOT EXISTS users (
     user_id INTEGER PRIMARY KEY,
+    points INTEGER DEFAULT 0,
     referred_by INTEGER,
-    verified INTEGER DEFAULT 0,
-    points INTEGER DEFAULT 0
-)''')
+    last_bonus TEXT,
+    verified INTEGER DEFAULT 0
+)""")
+c.execute("""CREATE TABLE IF NOT EXISTS referrals (
+    referrer_id INTEGER,
+    referred_id INTEGER,
+    PRIMARY KEY (referrer_id, referred_id)
+)""")
 conn.commit()
 
-def add_user(user_id, referred_by=None):
-    cursor.execute("INSERT OR IGNORE INTO users (user_id, referred_by) VALUES (?, ?)", (user_id, referred_by))
+WAITING_FOR_CODE = range(1)
+
+# === UI ===
+def main_menu():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("💰 Check Balance", callback_data="balance"),
+         InlineKeyboardButton("🔗 Referral Info", callback_data="referral_info")],
+        [InlineKeyboardButton("🎁 Redeem Code", callback_data="redeem")],
+        [InlineKeyboardButton("📘 How to Earn?", callback_data="how_to_earn")]
+    ])
+
+def back_button():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("⬅️ Back to Menu", callback_data="menu")]
+    ])
+
+# === UTILS ===
+def get_user(user_id):
+    c.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
+    return c.fetchone()
+
+def update_verification(user_id, status):
+    c.execute("UPDATE users SET verified = ? WHERE user_id = ?", (status, user_id))
     conn.commit()
 
-def get_points(user_id):
-    cursor.execute("SELECT points FROM users WHERE user_id = ?", (user_id,))
-    row = cursor.fetchone()
-    return row[0] if row else 0
-
-def add_points(user_id, amount):
-    cursor.execute("UPDATE users SET points = points + ? WHERE user_id = ?", (amount, user_id))
-    conn.commit()
-
-def mark_verified(user_id):
-    cursor.execute("UPDATE users SET verified = 1 WHERE user_id = ?", (user_id,))
-    conn.commit()
-
-def mark_unverified(user_id):
-    cursor.execute("UPDATE users SET verified = 0 WHERE user_id = ?", (user_id,))
-    conn.commit()
-
-def is_verified(user_id):
-    cursor.execute("SELECT verified FROM users WHERE user_id = ?", (user_id,))
-    row = cursor.fetchone()
-    return row and row[0] == 1
-
-@dp.message_handler(commands=['start'])
-async def start_cmd(message: types.Message):
-    user_id = message.from_user.id
-    args = message.get_args()
-    referred_by = int(args) if args.isdigit() and int(args) != user_id else None
-
-    add_user(user_id, referred_by)
-
-    if referred_by:
-        add_points(referred_by, 30)
-        await bot.send_message(referred_by, f"{message.from_user.full_name} joined using your referral link! You earned 30 points.")
-        for admin_id in ADMIN_IDS:
-            await bot.send_message(admin_id, f"New user {message.from_user.full_name} joined via referral link of {referred_by}.")
-
-    await message.answer("Welcome! Please verify your channel membership by sending /verify")
-
-@dp.message_handler(commands=['verify'])
-async def verify_cmd(message: types.Message):
-    user_id = message.from_user.id
-    failed = []
-
-    for channel_id in CHANNEL_IDS:
+# === CHANNEL VERIFICATION ===
+async def get_missing_channels(user_id, context):
+    missing = []
+    for channel in REQUIRED_CHANNELS:
         try:
-            member = await bot.get_chat_member(channel_id, user_id)
-            if member.status not in ["member", "administrator", "creator"]:
-                failed.append(channel_id)
-        except ChatNotFound:
-            failed.append(channel_id)
+            member = await context.bot.get_chat_member(channel, user_id)
+            if member.status not in ['member', 'administrator', 'creator']:
+                missing.append(channel)
+        except:
+            missing.append(channel)
+    return missing
 
-    if failed:
-        await message.reply("You must join all required public channels to verify.")
-        mark_unverified(user_id)
+async def verify_membership(user_id, context):
+    missing = await get_missing_channels(user_id, context)
+    if not missing:
+        update_verification(user_id, 1)
     else:
-        mark_verified(user_id)
-        await message.reply("Verification successful!")
+        update_verification(user_id, 0)
+    return missing
 
-@dp.message_handler(commands=['redeem'])
-async def redeem_cmd(message: types.Message):
-    user_id = message.from_user.id
-    if not is_verified(user_id):
-        return await message.reply("You're not verified. Join required channels and use /verify.")
+# === START ===
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    user_id = user.id
+    args = context.args
 
-    points = get_points(user_id)
-    if points < 30:
-        return await message.reply("You need at least 30 points to redeem.")
+    if not get_user(user_id):
+        c.execute("INSERT INTO users (user_id) VALUES (?)", (user_id,))
+        conn.commit()
+        for admin in ADMINS:
+            await context.bot.send_message(
+                chat_id=admin,
+                text=f"📢 *New User Joined!*\nName: [{user.first_name}](tg://user?id={user_id})\nID: `{user_id}`\nUsername: @{user.username or 'N/A'}",
+                parse_mode="Markdown"
+            )
 
-    add_points(user_id, -30)
-    await message.reply("Your redemption request has been sent to the admins. Please wait for approval or contact support.")
+    if args:
+        try:
+            referrer_id = int(args[0])
+            if referrer_id != user_id:
+                c.execute("SELECT 1 FROM referrals WHERE referrer_id = ? AND referred_id = ?", (referrer_id, user_id))
+                if not c.fetchone():
+                    c.execute("UPDATE users SET referred_by = ? WHERE user_id = ?", (referrer_id, user_id))
+                    c.execute("INSERT OR IGNORE INTO referrals (referrer_id, referred_id) VALUES (?, ?)", (referrer_id, user_id))
+                    c.execute("UPDATE users SET points = points + 3 WHERE user_id = ?", (referrer_id,))
+                    conn.commit()
+                    ref_user = await context.bot.get_chat(referrer_id)
+                    await context.bot.send_message(referrer_id, f"🎉 Your referral [{user.first_name}](tg://user?id={user_id}) joined using your link!", parse_mode="Markdown")
+                    for admin in ADMINS:
+                        await context.bot.send_message(admin, f"✅ [{user.first_name}](tg://user?id={user_id}) joined via [{ref_user.first_name}](tg://user?id={referrer_id})", parse_mode="Markdown")
+        except:
+            pass
 
-    for admin_id in ADMIN_IDS:
-        await bot.send_message(admin_id, f"User {message.from_user.full_name} ({user_id}) has redeemed 30 points!")
+    missing = await verify_membership(user_id, context)
+    if missing:
+        join_buttons = [[InlineKeyboardButton(f"Join {ch}", url=f"https://t.me/{ch.strip('@')}")] for ch in missing]
+        join_buttons.append([InlineKeyboardButton("✅ I've Joined All", callback_data="check_join")])
+        await update.message.reply_text(
+            f"📢 Please join *all* required channels to use the bot:\n\n{FOLDER_LINK}",
+            reply_markup=InlineKeyboardMarkup(join_buttons),
+            parse_mode="Markdown"
+        )
+        return
 
-    # Send official message to log channel with trophy image
-    trophy_image = InputFile("trophy.jpg")  # Make sure this file exists in your folder
-    await bot.send_photo(
-        chat_id=REDEMPTION_LOG_CHANNEL,
-        photo=trophy_image,
-        caption=f"{message.from_user.full_name} just redeemed 30 points! Congratulations!"
+    welcome = (
+        f"👋 *Welcome, {user.first_name}!* You're now part of the *Refer & Earn* program.\n"
+        f"💸 Refer friends and redeem rewards.\n\n"
+        f"📂 Folder link: {FOLDER_LINK}\n"
+        f"🛠️ For help, contact [Admin](tg://user?id={ADMINS[0]})"
+    )
+    await update.message.reply_text(welcome, reply_markup=main_menu(), parse_mode="Markdown")
+
+# === CALLBACKS ===
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user = query.from_user
+    user_id = user.id
+    await query.answer()
+
+    user_data = get_user(user_id)
+    if not user_data:
+        return await query.edit_message_text("⚠️ Start the bot first using /start.")
+
+    if query.data == "check_join":
+        missing = await verify_membership(user_id, context)
+        if not missing:
+            await query.edit_message_text("✅ You're verified!", reply_markup=main_menu())
+        else:
+            join_buttons = [[InlineKeyboardButton(f"Join {ch}", url=f"https://t.me/{ch.strip('@')}")] for ch in missing]
+            join_buttons.append([InlineKeyboardButton("✅ I've Joined All", callback_data="check_join")])
+            await query.edit_message_text("❗ You're still missing some channels:", reply_markup=InlineKeyboardMarkup(join_buttons), parse_mode="Markdown")
+
+    elif query.data == "menu":
+        await query.edit_message_text("🏠 *Main Menu*", reply_markup=main_menu(), parse_mode="Markdown")
+
+    elif query.data == "balance":
+        await query.edit_message_text(f"💰 Your Balance: `{user_data[1]} points`", reply_markup=back_button(), parse_mode="Markdown")
+
+    elif query.data == "referral_info":
+        link = f"https://t.me/{context.bot.username}?start={user_id}"
+        c.execute("SELECT referred_id FROM referrals WHERE referrer_id = ?", (user_id,))
+        referrals = c.fetchall()
+        referral_list = "\n".join([f"• [{(await context.bot.get_chat(uid)).first_name}](tg://user?id={uid})" for (uid,) in referrals]) if referrals else "No referrals yet."
+        await query.edit_message_text(
+            f"🔗 Your Referral Link:\n`{link}`\n\n"
+            f"👥 Total Referrals: `{len(referrals)}`\n\n"
+            f"{referral_list}",
+            reply_markup=back_button(), parse_mode="Markdown"
+        )
+
+    elif query.data == "redeem":
+        if user_data[1] >= 30:
+            await query.edit_message_text("🎁 *Please send your code to redeem*", parse_mode="Markdown", reply_markup=ReplyKeyboardRemove())
+            return WAITING_FOR_CODE
+        else:
+            await query.edit_message_text(f"⚠️ Not enough points. You need 30, but you have `{user_data[1]}`.", reply_markup=back_button(), parse_mode="Markdown")
+
+    elif query.data == "how_to_earn":
+        await query.edit_message_text("📘 *Earn Points By:*\n• Referring friends: +3 points\n• Redeem at 30 points", reply_markup=back_button(), parse_mode="Markdown")
+
+# === REDEEM CODE ===
+async def handle_code_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    user_id = user.id
+    code = update.message.text.strip()
+
+    c.execute("UPDATE users SET points = points - 30 WHERE user_id = ?", (user_id,))
+    conn.commit()
+
+    await update.message.reply_text(f"✅ *Code received:* `{code}`\nOur team will verify it soon.\nFor support, contact [Admin](tg://user?id={ADMINS[0]}).", parse_mode="Markdown", reply_markup=main_menu())
+
+    trophy_img = InputFile("trophy.jpg")
+    caption = f"🏆 *Redemption Request*\n\nUser: [{user.first_name}](tg://user?id={user_id})\nCode: `{code}`\nPoints Left: `{get_user(user_id)[1]}`"
+    await context.bot.send_photo(chat_id=REDEMPTION_CHANNEL, photo=trophy_img, caption=caption, parse_mode="Markdown")
+    return ConversationHandler.END
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("❌ Redemption cancelled.", reply_markup=main_menu())
+    return ConversationHandler.END
+
+# === WEB SERVER (OPTIONAL) ===
+async def handle(request):
+    return web.Response(text="Bot running")
+
+async def run_webserver():
+    app = web.Application()
+    app.router.add_get("/", handle)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", 10000)
+    await site.start()
+
+async def run_bot():
+    app = ApplicationBuilder().token(TOKEN).build()
+    redeem_handler = ConversationHandler(
+        entry_points=[CallbackQueryHandler(handle_callback, pattern="^redeem$")],
+        states={WAITING_FOR_CODE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_code_input)]},
+        fallbacks=[CommandHandler("cancel", cancel)],
+        allow_reentry=True
     )
 
-@dp.message_handler(commands=['check'])
-async def check_cmd(message: types.Message):
-    user_id = message.from_user.id
-    points = get_points(user_id)
-    await message.reply(f"You have {points} points.")
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(redeem_handler)
+    app.add_handler(CallbackQueryHandler(handle_callback))
 
-@dp.message_handler(commands=['recheck'])
-async def recheck_cmd(message: types.Message):
-    user_id = message.from_user.id
-    failed = []
+    logger.info("Bot is running...")
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling()
+    await asyncio.Event().wait()
 
-    for channel_id in CHANNEL_IDS:
-        try:
-            member = await bot.get_chat_member(channel_id, user_id)
-            if member.status not in ["member", "administrator", "creator"]:
-                failed.append(channel_id)
-        except:
-            failed.append(channel_id)
+async def main_all():
+    await asyncio.gather(run_webserver(), run_bot())
 
-    if failed:
-        mark_unverified(user_id)
-        await message.reply("You left required public channels. Please rejoin and use /verify.")
-    else:
-        await message.reply("You're still verified.")
-
-if __name__ == '__main__':
-    executor.start_polling(dp, skip_updates=True)
+if __name__ == "__main__":
+    asyncio.run(main_all())
